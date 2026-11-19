@@ -21,6 +21,8 @@
 - [x] 加号徽章居中修复：原用全角字符"＋"（U+FF0B，微软雅黑字形留白不对称不居中）+ 手动 Pt(0,1) 偏移；改为 UiStyle.cs 新增 PlusBadge 自绘控件，圆底与圆头加号在同一 OnPaint 内基于 (Width-1)/2 中心绘制，严格同心。离屏渲染像素验证 dx=0 dy=0。exe 52736 字节。
 - [x] 测试验证：六种格式全部通过物理字节级验证（身份信息残留为零），doc/docx 正文完整性用 LibreOffice 转换确认无损，OLE 结构有效
 
+- [x] Git 仓库初始化并推送 GitHub：main 分支首次提交 1a4fdf2（18 文件/2595 行），公开仓库 https://github.com/chenjfly/AttriDel 已建并推送，.gitignore 排除 exe/测试样本/.workbuddy；gh CLI v2.105.0 已装（winget），登录账号 chenjfly。
+
 ## 进行中
 
 - [ ] 飞哥验收 exe 交互（窗口拖放、快速模式）
