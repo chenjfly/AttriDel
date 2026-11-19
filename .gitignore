@@ -1,0 +1,30 @@
+# 编译产物 / 可执行文件
+*.exe
+*.dll
+*.pdb
+*.obj
+build/*.rsp
+
+# 备份与临时文件
+*.bak
+*.tmp
+*.attributedel.tmp
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 测试生成的样本文档
+tests/samples/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 编辑器 / AI 本地配置
+.vscode/
+.idea/
+.workbuddy/
+*.suo
+*.user
