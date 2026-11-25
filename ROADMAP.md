@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-阶段一：核心开发（已完成，待验收）
+阶段一：核心开发（已完成）；PDF 支持扩展（已完成，待验收）
 
 ## 已完成
 
@@ -22,6 +22,10 @@
 - [x] 测试验证：六种格式全部通过物理字节级验证（身份信息残留为零），doc/docx 正文完整性用 LibreOffice 转换确认无损，OLE 结构有效
 
 - [x] Git 仓库初始化并推送 GitHub：main 分支首次提交 1a4fdf2（18 文件/2595 行），公开仓库 https://github.com/chenjfly/AttriDel 已建并推送，.gitignore 排除 exe/测试样本/.workbuddy；gh CLI v2.105.0 已装（winget），登录账号 chenjfly。
+- [x] PDF 属性清除（第三条路径）：新增 src/PdfCleaner.cs，跟随 xref /Prev 链收集最新对象、解包对象流、清空 Info 字典（UTF-16BE/GBK/UTF-8 编码全覆盖）、移除 XMP /Metadata、重生成 /ID、按最新 xref 重建经典 xref 表丢弃增量更新残留；加密与含数字签名的 PDF 跳过。范围经飞哥确认：注释/表单/JS/附件/超链接/书签/图层由人工处理，程序不动。exe 68608 字节，仍为零第三方依赖单文件。
+- [x] PDF 测试样本与验证：tests/make_pdf_samples.py 生成四种样本（基础/增量更新/加密/签名），tests/verify_pdf.py 验证身份字段四编码零残留、XMP 标签清除、旧 ID 消失、增量旧版本字段消失、正文标记保留、startxref 偏移正确指向 xref。全量 10 文件回归：8 成功 2 跳过 0 失败，Office 六格式与 PDF 验证均 ALL PASS。
+- [x] 非空属性只读预览：新增 src/InspectResult.cs（PropertyItem / InspectResult / 中文显示名映射），三类格式各实现 Inspect 只读抓取（OOXML 读 docProps、PDF 复用 xref 解析并解码 UTF-16BE/GBK/UTF-8、OLE 用 COM 只读枚举属性集），Cleaner.Inspect 统一分派。界面选中文件即展示抓取到的非空属性（值超 60 字截断、换行压平、按项缓存）；加密/签名/占用文件给出跳过提示。命令行 --inspect 输出到 dist/inspect.txt 供自动化验证。exe 81920 字节。
+- [x] 预览验证：tests/verify_inspect.py 检查三类格式共 10 个样本的字段名与中文值（含三种 PDF 编码、OLE 编辑时长转换、加密与签名跳过提示），ALL PASS；清理全量回归 8 成功 2 跳过 0 失败，verify.py / verify_pdf.py 仍 ALL PASS。
 
 ## 进行中
 
@@ -37,6 +41,10 @@
 
 ## 最近验证
 
+- 2026-11-25：非空属性预览全量验证——verify_inspect.py 检查 10 个样本：OOXML 三格式各 20+ 字段中文正确、OLE 三格式编辑时长「123 分钟」转换正确、PDF 三种编码（UTF-16BE hex / GBK / UTF-8）中文全部还原、加密与签名给出跳过提示且不泄露属性，ALL PASS。清理回归 8 成功 2 跳过 0 失败，三套验证脚本全绿。exe 81920 字节。
+- 2026-11-25：修复预览解析三处关键 bug——PDF hex 无 BOM 时 UTF-8 严格解码把 UTF-16BE 中文误判为可读乱码（加 CJK 判据优先 UTF-16BE）；OLE `PROPSPEC` 联合体 64 位下少算 4 字节 padding、`STATPROPSTG.lpwstrName` 用 string 封送失败（改 IntPtr）；FieldNames 字典重复键导致 TypeInitializationException（去重）。
+- 2026-11-25：PDF 支持全量回归——重新生成六种 Office + 四种 PDF 样本，快速模式一次清理 10 个文件：成功 8（doc/docx/xls/xlsx/ppt/pptx/pdf/test_incremental.pdf）、跳过 2（加密/签名 PDF）、失败 0；verify.py 与 verify_pdf.py 全部 ALL PASS。exe 编译 ExitCode=0，68608 字节。
+- 2026-11-25：修复 PDF 解析关键 bug——`ReadObject` 内字典与流的偏移原本是相对整个文件的绝对位置，直接用于 `obj.Body.Substring` 导致越界异常（"索引和长度必须引用该字符串内的位置"）；改为写入 Body 前减去对象起始 offset。修复后基础与增量样本由失败转为成功。
 - 2026-11-19：加号徽章居中——反射加载真实 exe 的 PlusBadge 离屏渲染 400px 放大，圆底中心 (199.5,199.5)、加号中心 (199.5,199.5)，偏移 dx=0 dy=0；目视确认圆头加号上下左右留白均匀。
 - 2026-11-19：六种测试文档（docx/xlsx/pptx/doc/xls/ppt）全部 ALL PASS。验证维度：core/app XML 字段清空、custom 属性清空、ZIP 时间戳抹平、缩略图移除、rsid 清除、老格式物理字节搜索（UTF-8/UTF-16/GBK）零残留、OLE 头有效、正文完整。
 - 2026-11-19：文字渲染修复后重新编译（33792 字节），确认 manifest 已嵌入 exe（dpiAware/WindowsSettings/Common-Controls 标记均在）；冒烟验证 doc/docx 清理仍干净。

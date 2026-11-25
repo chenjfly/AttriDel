@@ -19,7 +19,7 @@ namespace AttriDel
         public CleanStatus Status { get; set; }
         public string Message { get; set; }
         public List<string> ClearedFields { get; set; }
-        public string Route { get; set; }   // "OOXML" / "OLE"
+        public string Route { get; set; }   // "OOXML" / "OLE" / "PDF"
 
         public CleanResult()
         {

@@ -397,6 +397,139 @@ namespace AttriDel
             TryDelete(tmp);
         }
 
+        /// <summary>只读预览：抓取 core/app/custom 中的非空属性，不修改文件。</summary>
+        public static InspectResult Inspect(string path)
+        {
+            List<PropertyItem> items = new List<PropertyItem>();
+            try
+            {
+                byte[] raw;
+                // 预览用只读共享模式：文件被其他程序打开时也能查看属性
+                using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    raw = new byte[fs.Length];
+                    int read = 0;
+                    while (read < raw.Length)
+                    {
+                        int n = fs.Read(raw, read, raw.Length - read);
+                        if (n == 0) break;
+                        read += n;
+                    }
+                }
+
+                List<ZipItem> zipItems;
+                try { zipItems = ReadZip(raw); }
+                catch (InvalidDataException)
+                {
+                    return InspectResult.Skip("文件已加密或不是有效的 OOXML 包");
+                }
+
+                foreach (ZipItem it in zipItems)
+                {
+                    string n = it.Name.ToLowerInvariant();
+                    if (n.StartsWith("encryptioninfo") || n.StartsWith("encryptedpackage"))
+                        return InspectResult.Skip("文件已加密，无法读取属性");
+                }
+
+                InspectCore(zipItems, items);
+                InspectApp(zipItems, items);
+                InspectCustom(zipItems, items);
+
+                return InspectResult.Ok(items);
+            }
+            catch (IOException ex)
+            {
+                return InspectResult.Skip("文件无法读取：" + ex.Message);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return InspectResult.Skip("无权限访问：" + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                return InspectResult.Skip("无法读取属性：" + ex.Message);
+            }
+        }
+
+        private static void InspectCore(List<ZipItem> items, List<PropertyItem> result)
+        {
+            ZipItem it = Find(items, "docProps/core.xml");
+            if (it == null) return;
+
+            XmlDocument doc = new XmlDocument();
+            doc.Load(new MemoryStream(it.Data));
+            if (doc.DocumentElement == null) return;
+
+            foreach (string f in CoreFields)
+            {
+                foreach (XmlNode node in doc.DocumentElement.ChildNodes)
+                {
+                    if (node.NodeType != XmlNodeType.Element) continue;
+                    if (!string.Equals(node.LocalName, f, StringComparison.OrdinalIgnoreCase)) continue;
+                    string v = node.InnerText.Trim();
+                    if (v.Length > 0)
+                        result.Add(new PropertyItem(FieldNames.Get(f), v));
+                    break;
+                }
+            }
+        }
+
+        private static void InspectApp(List<ZipItem> items, List<PropertyItem> result)
+        {
+            ZipItem it = Find(items, "docProps/app.xml");
+            if (it == null) return;
+
+            XmlDocument doc = new XmlDocument();
+            doc.Load(new MemoryStream(it.Data));
+            if (doc.DocumentElement == null) return;
+
+            foreach (string f in AppFields)
+            {
+                foreach (XmlNode node in doc.DocumentElement.ChildNodes)
+                {
+                    if (node.NodeType != XmlNodeType.Element) continue;
+                    bool hasChildElement = false;
+                    foreach (XmlNode c in node.ChildNodes)
+                        if (c.NodeType == XmlNodeType.Element) { hasChildElement = true; break; }
+                    if (hasChildElement) continue;
+                    if (!string.Equals(node.LocalName, f, StringComparison.OrdinalIgnoreCase)) continue;
+                    string v = node.InnerText.Trim();
+                    if (v.Length > 0)
+                        result.Add(new PropertyItem(FieldNames.Get(f), v));
+                    break;
+                }
+            }
+        }
+
+        private static void InspectCustom(List<ZipItem> items, List<PropertyItem> result)
+        {
+            ZipItem it = Find(items, "docProps/custom.xml");
+            if (it == null) return;
+
+            XmlDocument doc = new XmlDocument();
+            doc.Load(new MemoryStream(it.Data));
+            if (doc.DocumentElement == null) return;
+
+            foreach (XmlNode node in doc.DocumentElement.ChildNodes)
+            {
+                if (node.NodeType != XmlNodeType.Element) continue;
+                XmlAttribute nameAttr = node.Attributes["name"];
+                string name = nameAttr != null && nameAttr.Value.Trim().Length > 0
+                    ? nameAttr.Value.Trim() : "自定义属性";
+                string v = string.Empty;
+                foreach (XmlNode c in node.ChildNodes)
+                {
+                    if (c.NodeType == XmlNodeType.Element && c.InnerText.Trim().Length > 0)
+                    {
+                        v = c.InnerText.Trim();
+                        break;
+                    }
+                }
+                if (v.Length > 0)
+                    result.Add(new PropertyItem(name, v));
+            }
+        }
+
         private static void TryDelete(string path)
         {
             try { if (File.Exists(path)) File.Delete(path); }

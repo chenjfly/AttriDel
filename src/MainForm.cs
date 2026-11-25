@@ -17,6 +17,9 @@ namespace AttriDel
         private RoundedPanel dropZone;
         private RoundedButton runButton;
         private List<CleanResult> lastResults;
+        // 属性预览缓存：同一文件只解析一次，避免反复选中大文件卡顿
+        private readonly Dictionary<string, InspectResult> inspectCache =
+            new Dictionary<string, InspectResult>(StringComparer.OrdinalIgnoreCase);
 
         // 运行时屏幕 DPI / 96。控件坐标按 96 DPI 基准硬编码，据此等比缩放，
         // 与 DPI 感知下字体的真实像素渲染保持一致，避免文字撑破控件框。
@@ -266,7 +269,7 @@ namespace AttriDel
         {
             OpenFileDialog dlg = new OpenFileDialog();
             dlg.Multiselect = true;
-            dlg.Filter = "Office 文档|*.docx;*.xlsx;*.pptx;*.doc;*.xls;*.ppt|所有文件|*.*";
+            dlg.Filter = "文档|*.docx;*.xlsx;*.pptx;*.doc;*.xls;*.ppt;*.pdf|所有文件|*.*";
             if (dlg.ShowDialog() == DialogResult.OK)
                 AddPaths(dlg.FileNames);
         }
@@ -347,8 +350,38 @@ namespace AttriDel
             }
 
             sb.AppendLine();
-            sb.AppendLine("将清除：作者、标题、主题、关键词、描述、最后修改人、修订次数、类别、内容状态、创建/修改/打印时间、公司、经理、模板、应用信息、字数统计、自定义属性");
-            sb.AppendLine("并抹平 ZIP 时间戳、移除缩略图、清除 rsid；正文不动");
+
+            InspectResult inspect;
+            if (!inspectCache.TryGetValue(path, out inspect))
+            {
+                inspect = Cleaner.Inspect(path);
+                inspectCache[path] = inspect;
+            }
+
+            if (!inspect.Success)
+            {
+                sb.AppendLine("无法预览：" + inspect.Message);
+                detailBox.Text = sb.ToString();
+                return;
+            }
+
+            if (inspect.Items.Count == 0)
+            {
+                sb.AppendLine("未检测到可清除的属性。");
+                detailBox.Text = sb.ToString();
+                return;
+            }
+
+            sb.AppendLine("检测到的非空属性（" + inspect.Items.Count + " 项）：");
+            foreach (PropertyItem p in inspect.Items)
+            {
+                string v = p.Value;
+                if (v.Length > 60) v = v.Substring(0, 60) + "…";
+                v = v.Replace("\r", " ").Replace("\n", " ");
+                sb.AppendLine("  " + p.Name + "：" + v);
+            }
+            sb.AppendLine();
+            sb.AppendLine("点「开始清除」后上述属性将清空；正文/页面内容不动，保留 .bak 备份。");
             detailBox.Text = sb.ToString();
         }
 

@@ -255,6 +255,268 @@ namespace AttriDel
             return false;
         }
 
+        /// <summary>只读预览所需的 COM 结构</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct STATPROPSTG
+        {
+            public IntPtr lpwstrName;   // COM 返回 LPWSTR 指针，手动转换
+            public uint propid;
+            public ushort vt;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PROPSPEC
+        {
+            public uint ulKind;     // PRSPEC_PROPID = 1
+            private uint _padding;  // 64 位下联合体按 8 字节对齐
+            public uint propid;
+            private uint _padding2;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct PROPVARIANT
+        {
+            [FieldOffset(0)] public ushort vt;
+            [FieldOffset(8)] public IntPtr ptr;      // VT_LPSTR / VT_LPWSTR
+            [FieldOffset(8)] public int i4;
+            [FieldOffset(8)] public double dbl;
+            [FieldOffset(8)] public long filetime;
+        }
+
+        [ComImport, Guid("00000139-0000-0000-C000-000000000046"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IEnumSTATPROPSTG
+        {
+            void Next(uint celt, IntPtr rgelt, out uint pceltFetched);
+            void Skip(uint celt);
+            void Reset();
+            void Clone(out IEnumSTATPROPSTG ppenum);
+        }
+
+        private const ushort VT_EMPTY = 0;
+        private const ushort VT_I2 = 2;
+        private const ushort VT_I4 = 3;
+        private const ushort VT_R8 = 5;
+        private const ushort VT_BOOL = 11;
+        private const ushort VT_LPSTR = 30;
+        private const ushort VT_LPWSTR = 31;
+        private const ushort VT_FILETIME = 64;
+
+        /// <summary>只读预览：枚举三个属性集的非空属性，不修改文件。</summary>
+        public static InspectResult Inspect(string path)
+        {
+            List<PropertyItem> items = new List<PropertyItem>();
+            IntPtr pStgObj = IntPtr.Zero;
+            IStorage storage = null;
+            try
+            {
+                byte[] raw;
+                using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    raw = new byte[fs.Length];
+                    fs.Read(raw, 0, raw.Length);
+                }
+                if (ContainsUtf16(raw, "EncryptedPackage") || ContainsUtf16(raw, "EncryptionInfo"))
+                    return InspectResult.Skip("文件已加密，无法读取属性");
+
+                Guid iidStg = typeof(IStorage).GUID;
+                int hr = StgOpenStorageEx(path, STGM_READ | STGM_SHARE_EXCLUSIVE,
+                                          STGFMT_ANY, 0, IntPtr.Zero, IntPtr.Zero,
+                                          ref iidStg, out pStgObj);
+                if (hr != 0 || pStgObj == IntPtr.Zero)
+                    return InspectResult.Skip("文件被占用或无法打开");
+                storage = (IStorage)Marshal.GetTypedObjectForIUnknown(pStgObj, typeof(IStorage));
+
+                Guid[] fmtids = { FMTID_SummaryInformation, FMTID_DocSummaryInformation,
+                                  FMTID_UserDefinedProperties };
+                string[] prefixes = { "", "d", "u" };
+                for (int k = 0; k < fmtids.Length; k++)
+                {
+                    ReadPropertySet(pStgObj, fmtids[k], prefixes[k], items);
+                }
+                return InspectResult.Ok(items);
+            }
+            catch (COMException ex)
+            {
+                return InspectResult.Skip("文件被占用或无法打开：" + ex.Message);
+            }
+            catch (IOException ex)
+            {
+                return InspectResult.Skip("文件无法读取：" + ex.Message);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return InspectResult.Skip("无权限访问：" + ex.Message);
+            }
+            catch (Exception ex)
+            {
+                return InspectResult.Skip("无法读取属性：" + ex.Message);
+            }
+            finally
+            {
+                if (storage != null) Marshal.ReleaseComObject(storage);
+                if (pStgObj != IntPtr.Zero) Marshal.Release(pStgObj);
+            }
+        }
+
+        private static void ReadPropertySet(IntPtr pStgObj, Guid fmtid, string prefix,
+                                            List<PropertyItem> items)
+        {
+            IntPtr pPss = IntPtr.Zero;
+            IPropertySetStorage pss = null;
+            IntPtr pPropStg = IntPtr.Zero;
+            IPropertyStorage propStg = null;
+            IntPtr pEnum = IntPtr.Zero;
+            IEnumSTATPROPSTG enumerator = null;
+            try
+            {
+                Guid iidPss = typeof(IPropertySetStorage).GUID;
+                int hrQ = Marshal.QueryInterface(pStgObj, ref iidPss, out pPss);
+                if (hrQ != 0 || pPss == IntPtr.Zero) return;
+                pss = (IPropertySetStorage)Marshal.GetTypedObjectForIUnknown(
+                    pPss, typeof(IPropertySetStorage));
+
+                Guid f = fmtid;
+                try
+                {
+                    pss.Open(ref f, STGM_READ | STGM_SHARE_EXCLUSIVE, out propStg);
+                }
+                catch (COMException)
+                {
+                    return;   // 属性集不存在
+                }
+                if (propStg == null) return;
+
+                propStg.Enum(out pEnum);
+                if (pEnum == IntPtr.Zero) return;
+                enumerator = (IEnumSTATPROPSTG)Marshal.GetTypedObjectForIUnknown(
+                    pEnum, typeof(IEnumSTATPROPSTG));
+
+                int statSize = Marshal.SizeOf(typeof(STATPROPSTG));
+                IntPtr statPtr = Marshal.AllocHGlobal(statSize);
+                try
+                {
+                    uint fetched;
+                    while (true)
+                    {
+                        enumerator.Next(1, statPtr, out fetched);
+                        if (fetched == 0) break;
+                        STATPROPSTG stat = (STATPROPSTG)Marshal.PtrToStructure(statPtr, typeof(STATPROPSTG));
+                        string value = ReadOneProperty(propStg, stat.propid, stat.vt);
+                        if (value == null || value.Length == 0) continue;
+
+                        // TotalTime（pid:10）在 OLE 里以 VT_FILETIME 存放，语义是 100ns 计数的编辑时长
+                        if (stat.propid == 10 && !prefix.Equals("u", StringComparison.Ordinal) &&
+                            stat.vt == VT_FILETIME)
+                        {
+                            long ticks;
+                            if (long.TryParse(value, out ticks) && ticks > 0)
+                                value = Math.Round(ticks / 600000000.0, 1) + " 分钟";
+                            else
+                                value = string.Empty;
+                            if (value.Length == 0) continue;
+                        }
+
+                        string propName = stat.lpwstrName != IntPtr.Zero
+                            ? Marshal.PtrToStringUni(stat.lpwstrName) : null;
+                        string displayName;
+                        if (propName != null && propName.Trim().Length > 0)
+                        {
+                            // 已知属性名统一中文显示，其余自定义属性保留原名
+                            string mapped = FieldNames.Get(propName.Trim());
+                            displayName = mapped.Equals(propName.Trim(), StringComparison.Ordinal)
+                                ? propName.Trim() : mapped;
+                        }
+                        else
+                            displayName = FieldNames.Get("pid:" + prefix + stat.propid);
+                        items.Add(new PropertyItem(displayName, value));
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(statPtr);
+                }
+            }
+            finally
+            {
+                if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+                if (propStg != null) Marshal.ReleaseComObject(propStg);
+                if (pEnum != IntPtr.Zero) Marshal.Release(pEnum);
+                if (pss != null) Marshal.ReleaseComObject(pss);
+                if (pPss != IntPtr.Zero) Marshal.Release(pPss);
+            }
+        }
+
+        private static string ReadOneProperty(IPropertyStorage propStg, uint propid, ushort declaredVt)
+        {
+            int psSize = Marshal.SizeOf(typeof(PROPSPEC));
+            int pvSize = Marshal.SizeOf(typeof(PROPVARIANT));
+            IntPtr psPtr = Marshal.AllocHGlobal(psSize);
+            IntPtr pvPtr = Marshal.AllocHGlobal(pvSize);
+            string result = string.Empty;
+            try
+            {
+                PROPSPEC ps = new PROPSPEC { ulKind = 1, propid = propid };
+                Marshal.StructureToPtr(ps, psPtr, false);
+                for (int i = 0; i < pvSize; i++) Marshal.WriteByte(pvPtr, i, 0);
+
+                propStg.ReadMultiple(1, psPtr, pvPtr);
+                PROPVARIANT pv = (PROPVARIANT)Marshal.PtrToStructure(pvPtr, typeof(PROPVARIANT));
+
+                switch (pv.vt)
+                {
+                    case VT_LPWSTR:
+                        if (pv.ptr != IntPtr.Zero) result = Marshal.PtrToStringUni(pv.ptr) ?? string.Empty;
+                        break;
+                    case VT_LPSTR:
+                        if (pv.ptr != IntPtr.Zero) result = Marshal.PtrToStringAnsi(pv.ptr) ?? string.Empty;
+                        break;
+                    case VT_FILETIME:
+                        if (propid == 12 || propid == 13 || propid == 11)   // 创建/修改/打印时间
+                        {
+                            try { result = DateTime.FromFileTime(pv.filetime).ToString("yyyy-MM-dd HH:mm:ss"); }
+                            catch { result = string.Empty; }
+                        }
+                        else
+                        {
+                            result = pv.filetime.ToString();   // 如 TotalTime：由调用方按数值解释
+                        }
+                        break;
+                    case VT_I2:
+                        result = ((short)(pv.i4 & 0xFFFF)).ToString();
+                        break;
+                    case VT_I4:
+                        result = pv.i4.ToString();
+                        break;
+                    case VT_R8:
+                        result = pv.dbl.ToString();
+                        break;
+                    case VT_BOOL:
+                        result = ((short)(pv.i4 & 0xFFFF)) != 0 ? "是" : "否";
+                        break;
+                    default:
+                        result = string.Empty;   // 二进制/未知类型不展示
+                        break;
+                }
+                // 释放 BSTR / LPWSTR / LPSTR 等分配的内存
+                if ((pv.vt == VT_LPWSTR || pv.vt == VT_LPSTR) && pv.ptr != IntPtr.Zero)
+                {
+                    try { Marshal.FreeCoTaskMem(pv.ptr); }
+                    catch { }
+                }
+                return result.Trim();
+            }
+            catch (COMException)
+            {
+                return string.Empty;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(psPtr);
+                Marshal.FreeHGlobal(pvPtr);
+            }
+        }
+
         private static void TryDelete(string path)
         {
             try { if (File.Exists(path)) File.Delete(path); }
